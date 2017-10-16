@@ -1,0 +1,130 @@
+#!/usr/bin/env php
+<?php
+if (empty($argv[1]))
+{
+    echo "Usage: serverd {start|stop|restart|reload}\n";
+    exit;
+}
+
+$cmd = $argv[1];
+$pid_dir = '/var/run';
+
+define('ROOT_DIR', realpath(__DIR__ . '/../'));
+define('PID_FILE', $pid_dir . '/php-server.pid');
+
+// 检查是否有写权限
+if ($cmd != 'status' && !is_writeable($pid_dir))
+{
+    exit("\n\033[31;40mYou should $cmd the server as root\033[0m\n\n\033[31;40mServer $cmd failed\033[0m\n\n");
+}
+
+require_once ROOT_DIR . '/core/PHPService.php';
+chdir(ROOT_DIR . '/core');
+
+//
+if ($cmd != 'status' && is_file(PID_FILE))
+{
+    // 检查权限
+    if (!posix_access(PID_FILE, POSIX_W_OK))
+    {
+        if ($stat = stat(PID_FILE))
+        {
+            if ($start_pwuid = posix_getpwuid($stat['uid']) && $current_pwuid = posix_getpwuid(posix_getuid()))
+            {
+                exit("\n\033[31;40mServer is started by user {$start_pwuid['name']}, {$current_pwuid['name']} can not $cmd Server, Permission denied\033[0m\n\n\033[31;40mServer $cmd failed\033[0m\n\n");
+            }
+        }
+        exit("Can not $cmd Server, Permission denied\n");
+    }
+
+    if ($pid = @file_get_contents(PID_FILE))
+    {
+        if (posix_kill($pid, 0) === false)
+        {
+            if (!unlink(PID_FILE))
+            {
+                exit("Can not $cmd Server\n\n");
+            }
+        }
+    }
+}
+
+switch($cmd)
+{
+    case 'start':
+        $worker_user = isset($argv[2]) ? $argv[2] : '';
+        PHPServer::init();
+        PHPServer::run($worker_user);
+        break;
+    case 'stop':
+        $pid = @file_get_contents(PID_FILE);
+        if(empty($pid))
+        {
+            exit("Server not running?\n");
+        }
+        stop_and_wait();
+        break;
+    case 'restart':
+        stop_and_wait();
+        $worker_user = isset($argv[2]) ? $argv[2] : '';
+        PHPServer::init();
+        PHPServer::run($worker_user);
+        break;
+    case 'reload':
+        $pid = @file_get_contents(PID_FILE);
+        if(empty($pid))
+        {
+            exit("server not running?\n");
+        }
+        posix_kill($pid, SIGUSR2);
+        echo "reload PHP-Server\n";
+        break;
+    default:
+        echo "Usage: serverd {start|stop|restart|reload}\n";
+        exit;
+}
+
+function stop_and_wait($wait_time = 6)
+{
+    $pid = @file_get_contents(PID_FILE);
+    if(empty($pid))
+    {
+        //exit("server not running?\n");
+    }
+    else
+    {
+        $start_time = time();
+        posix_kill($pid, SIGINT);
+        while(is_file(PID_FILE))
+        {
+            clearstatcache();
+            usleep(1000);
+            if(time()-$start_time >= $wait_time)
+            {
+                kill();
+                unlink(PID_FILE);
+                usleep(500000);
+                break;
+            }
+        }
+        echo "PHP-Server stoped\n";
+    }
+}
+
+function kill()
+{
+    $ret = $match = array();
+    exec("ps aux | grep -E 'PHPServer|serverd'", $ret);
+    $this_pid = posix_getpid();
+    foreach($ret as $line)
+    {
+        if(preg_match("/^[\S]+\s+(\d+)\s+/", $line, $match))
+        {
+            $tmp_pid = $match[1];
+            if($this_pid != $tmp_pid)
+            {
+                posix_kill($tmp_pid, SIGKILL);
+            }
+        }
+    }
+}
